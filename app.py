@@ -27,13 +27,32 @@ st.set_page_config(
 
 @st.cache_resource
 def load_models_and_scalers():
+    # Model regresi 1-hari
     lstm_model = tf.keras.models.load_model("lstm_stock_model.h5")
     gru_model = tf.keras.models.load_model("gru_stock_model.h5")
 
+    # Model multi-step 5 hari
+    hybrid_model = tf.keras.models.load_model("hybrid_5day_model.h5")
+
+    # Model klasifikasi arah 5 hari
+    direction_model = tf.keras.models.load_model("direction_5day_model.h5")
+
+    # Scaler regresi (fitur & target)
     feature_scaler = joblib.load("feature_scaler_stock.save")
     target_scaler = joblib.load("target_scaler_stock.save")
 
-    return lstm_model, gru_model, feature_scaler, target_scaler
+    # Scaler klasifikasi
+    cls_feature_scaler = joblib.load("cls_feature_scaler.save")
+
+    return (
+        lstm_model,
+        gru_model,
+        hybrid_model,
+        direction_model,
+        feature_scaler,
+        target_scaler,
+        cls_feature_scaler,
+    )
 
 
 # ==========================================================
@@ -104,16 +123,33 @@ FEATURE_COLS = [
 LOOK_BACK = 60  # sama seperti di notebook
 
 
-def prepare_last_window(df_features: pd.DataFrame, feature_scaler):
+def prepare_last_window_reg(df_features: pd.DataFrame, feature_scaler):
     """
-    Mengambil 60 baris terakhir dari df_features,
-    men-scale dengan feature_scaler, dan mengubah menjadi shape (1, 60, n_features).
+    Untuk regresi (LSTM, GRU, Hybrid 5-day):
+    Mengambil 60 baris terakhir fitur, scaling, dan reshape ke (1, 60, n_features).
     """
     if len(df_features) < LOOK_BACK:
         return None
 
     latest_features = df_features[FEATURE_COLS].values[-LOOK_BACK:]
     latest_scaled = feature_scaler.transform(latest_features)
+    X_last = latest_scaled.reshape(1, LOOK_BACK, len(FEATURE_COLS))
+
+    last_close = df_features["Close"].iloc[-1]
+
+    return X_last, float(last_close)
+
+
+def prepare_last_window_cls(df_features: pd.DataFrame, cls_feature_scaler):
+    """
+    Untuk klasifikasi arah 5 hari:
+    Sama seperti regresi, tapi pakai scaler klasifikasi.
+    """
+    if len(df_features) < LOOK_BACK:
+        return None
+
+    latest_features = df_features[FEATURE_COLS].values[-LOOK_BACK:]
+    latest_scaled = cls_feature_scaler.transform(latest_features)
     X_last = latest_scaled.reshape(1, LOOK_BACK, len(FEATURE_COLS))
 
     last_close = df_features["Close"].iloc[-1]
@@ -136,13 +172,17 @@ start_date = dt.date.today() - dt.timedelta(days=365 * years_back)
 
 st.sidebar.markdown("---")
 st.sidebar.write("Model yang digunakan:")
-st.sidebar.write("- LSTM (1-day forecast)")
-st.sidebar.write("- GRU (1-day forecast)")
+st.sidebar.write("- LSTM (regresi 1 hari)")
+st.sidebar.write("- GRU (regresi 1 hari)")
+st.sidebar.write("- Hybrid LSTM+GRU (regresi 5 hari)")
+st.sidebar.write("- LSTM+GRU (klasifikasi arah 5 hari)")
 st.sidebar.write("- Naive baseline (harga kemarin)")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Catatan: ini adalah demo edukasi.\n"
-                   "Prediksi **bukan** rekomendasi investasi.")
+st.sidebar.caption(
+    "Catatan: ini adalah demo edukasi.\n"
+    "Prediksi **bukan** rekomendasi investasi."
+)
 
 
 # ==========================================================
@@ -150,7 +190,15 @@ st.sidebar.caption("Catatan: ini adalah demo edukasi.\n"
 # ==========================================================
 
 with st.spinner("Memuat model & scaler..."):
-    lstm_model, gru_model, feature_scaler, target_scaler = load_models_and_scalers()
+    (
+        lstm_model,
+        gru_model,
+        hybrid_model,
+        direction_model,
+        feature_scaler,
+        target_scaler,
+        cls_feature_scaler,
+    ) = load_models_and_scalers()
 
 with st.spinner(f"Mengambil data {ticker} dari Yahoo Finance..."):
     price_data = load_price_data(ticker, start_date)
@@ -170,13 +218,15 @@ price_data_feat = add_technical_features(price_data_feat)
 # Drop baris yang masih mengandung NaN dari indikator teknikal
 price_data_feat = price_data_feat.dropna().copy()
 
-X_last_and_close = prepare_last_window(price_data_feat, feature_scaler)
+reg_last = prepare_last_window_reg(price_data_feat, feature_scaler)
+cls_last = prepare_last_window_cls(price_data_feat, cls_feature_scaler)
 
-if X_last_and_close is None:
+if reg_last is None or cls_last is None:
     st.error(f"Data terlalu pendek (< {LOOK_BACK} hari) untuk membuat window prediksi.")
     st.stop()
 
-X_last, last_close = X_last_and_close
+X_last_reg, last_close_reg = reg_last
+X_last_cls, last_close_cls = cls_last  # last_close_cls sama dengan last_close_reg, tapi tidak masalah
 
 
 # ==========================================================
@@ -186,8 +236,11 @@ X_last, last_close = X_last_and_close
 st.title("📈 Prediksi Harga Saham Harian dengan LSTM & GRU")
 
 st.markdown(f"""
-Aplikasi ini menggunakan model **LSTM** dan **GRU** yang telah dilatih
-untuk memprediksi **harga penutupan (Close)** 1 hari ke depan.
+Aplikasi ini menggunakan beberapa model berbasis **LSTM** dan **GRU** yang telah dilatih untuk:
+
+1. Memprediksi **harga penutupan (Close)** 1 hari ke depan.
+2. Memprediksi **harga penutupan 5 hari ke depan** (multi-step).
+3. Memprediksi **arah pergerakan harga dalam 5 hari ke depan** (Naik / Tidak Naik).
 
 - Ticker: **{ticker}**
 - Data historis: {start_date.strftime("%d-%m-%Y")} s/d hari ini
@@ -202,7 +255,13 @@ untuk memprediksi **harga penutupan (Close)** 1 hari ke depan.
 # 9. Tab Navigasi
 # ==========================================================
 
-tab1, tab2, tab3 = st.tabs(["📊 Data Historis", "🔮 Prediksi 1 Hari ke Depan", "📈 Backtest Sederhana"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 Data Historis",
+    "🔮 Prediksi 1 Hari",
+    "📅 Prediksi 5 Hari (Hybrid)",
+    "📈 Arah 5 Hari (Klasifikasi)",
+    "ℹ️ Catatan & Backtest"
+])
 
 
 # ==========================================================
@@ -226,29 +285,33 @@ with tab1:
 
 
 # ==========================================================
-# 9b. Tab 2 – Prediksi 1 Hari ke Depan
+# 9b. Tab 2 – Prediksi 1 Hari ke Depan (Regresi)
 # ==========================================================
 
 with tab2:
     st.subheader("Prediksi Harga 1 Hari ke Depan")
 
     # Prediksi dalam skala ter-normalisasi
-    y_pred_lstm_scaled = lstm_model.predict(X_last)
-    y_pred_gru_scaled = gru_model.predict(X_last)
+    y_pred_lstm_scaled = lstm_model.predict(X_last_reg)
+    y_pred_gru_scaled = gru_model.predict(X_last_reg)
 
     # Inverse transform ke skala harga asli
-    y_pred_lstm = target_scaler.inverse_transform(y_pred_lstm_scaled.reshape(-1, 1))[0, 0]
-    y_pred_gru = target_scaler.inverse_transform(y_pred_gru_scaled.reshape(-1, 1))[0, 0]
+    y_pred_lstm = target_scaler.inverse_transform(
+        y_pred_lstm_scaled.reshape(-1, 1)
+    )[0, 0]
+    y_pred_gru = target_scaler.inverse_transform(
+        y_pred_gru_scaled.reshape(-1, 1)
+    )[0, 0]
 
     # Baseline naive
-    naive_pred = last_close
+    naive_pred = last_close_reg
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Harga Terakhir (Close)", f"{last_close:,.2f}")
+    col_a.metric("Harga Terakhir (Close)", f"{last_close_reg:,.2f}")
     col_b.metric("Prediksi LSTM (besok)", f"{y_pred_lstm:,.2f}",
-                 f"{y_pred_lstm - last_close:,.2f}")
+                 f"{y_pred_lstm - last_close_reg:,.2f}")
     col_c.metric("Prediksi GRU (besok)", f"{y_pred_gru:,.2f}",
-                 f"{y_pred_gru - last_close:,.2f}")
+                 f"{y_pred_gru - last_close_reg:,.2f}")
 
     st.markdown("#### Perbandingan Prediksi")
     df_pred = pd.DataFrame({
@@ -277,30 +340,163 @@ with tab2:
 
 
 # ==========================================================
-# 9c. Tab 3 – Backtest Sederhana di Data Historis
+# 9c. Tab 3 – Prediksi 5 Hari ke Depan (Hybrid)
 # ==========================================================
 
 with tab3:
-    st.subheader("Backtest Sederhana (Hanya Visual)")
+    st.subheader("Prediksi 5 Hari ke Depan (Hybrid LSTM+GRU)")
+
+    horizon = st.slider("Pilih horizon prediksi (hari ke-)", 1, 5, 5)
+
+    # Prediksi 5 hari dalam skala ter-normalisasi
+    y_pred_5_scaled = hybrid_model.predict(X_last_reg)  # shape (1, 5)
+    y_pred_5_flat = target_scaler.inverse_transform(
+        y_pred_5_scaled.reshape(-1, 1)
+    ).flatten()  # shape (5,)
+
+    days = np.arange(1, 6)
+    naive_path = np.full_like(days, fill_value=last_close_reg, dtype=float)
+
+    # Tampilkan angka untuk horizon terpilih
+    selected_price = y_pred_5_flat[horizon - 1]
+
+    col1, col2 = st.columns(2)
+    col1.metric(f"Prediksi Hybrid untuk hari ke-{horizon}",
+                f"{selected_price:,.2f}",
+                f"{selected_price - last_close_reg:,.2f}")
+    col2.metric("Harga terakhir (acuan Naive)",
+                f"{last_close_reg:,.2f}")
+
+    # Plot jalur 5 hari ke depan
+    fig_forecast = go.Figure()
+    fig_forecast.add_trace(go.Scatter(
+        x=days,
+        y=y_pred_5_flat,
+        mode="lines+markers",
+        name="Prediksi Hybrid"
+    ))
+    fig_forecast.add_trace(go.Scatter(
+        x=days,
+        y=naive_path,
+        mode="lines",
+        name="Naive (harga sekarang)",
+        line=dict(dash="dash")
+    ))
+    fig_forecast.update_layout(
+        title=f"Prediksi 5 Hari ke Depan untuk {ticker}",
+        xaxis_title="Hari ke-",
+        yaxis_title="Perkiraan Harga Penutupan"
+    )
+    st.plotly_chart(fig_forecast, use_container_width=True)
 
     st.markdown("""
-Backtest ini **tidak** melakukan retraining model di Streamlit.
-Sebagai gantinya, kita hanya menampilkan lagi **grafik hasil evaluasi**
-dari model yang sudah dilatih di notebook:
+**Catatan:**
 
-- Garis biru: harga aktual
-- Garis hijau: GRU (biasanya sedikit lebih baik dari LSTM)
-- Garis oranye: LSTM
-- Garis merah putus: baseline naive
+- Model hybrid memprediksi **5 titik harga ke depan sekaligus** (t+1 ... t+5).
+- Garis putus-putus menunjukkan baseline *naive* (harga selalu sama dengan hari ini).
+- Performa nyata hybrid vs naive sudah dianalisis di notebook, dan untuk data harian biasanya naive masih sangat kuat.
+""")
 
-Untuk backtest yang lebih mendalam (RMSE/MAE dsb.), analisis sudah dilakukan di notebook.
-Di aplikasi ini fokusnya adalah eksplorasi visual & prediksi harian.
+
+# ==========================================================
+# 9d. Tab 4 – Prediksi Arah 5 Hari ke Depan (Klasifikasi)
+# ==========================================================
+
+with tab4:
+    st.subheader("Prediksi Arah 5 Hari ke Depan (Naik / Tidak Naik)")
+
+    # Probabilitas naik (label 1)
+    proba_up = direction_model.predict(X_last_cls).flatten()[0]  # antara 0..1
+
+    threshold = st.slider(
+        "Ambang probabilitas untuk sinyal beli (%)",
+        min_value=50,
+        max_value=90,
+        value=60,
+        step=1
+    )
+    th = threshold / 100.0
+
+    # Keputusan sederhana
+    if proba_up >= th:
+        signal = "BUY (sinyal beli)"
+        color = "green"
+    elif proba_up <= 1 - th:
+        signal = "SELL / AVOID"
+        color = "red"
+    else:
+        signal = "NEUTRAL / NO ACTION"
+        color = "orange"
+
+    col1, col2 = st.columns(2)
+    col1.metric("Probabilitas harga 5 hari lagi LEBIH TINGGI daripada hari ini",
+                f"{proba_up * 100:.2f}%")
+    col2.markdown(f"### Sinyal sederhana: :{color}[{signal}]")
+
+    st.markdown("""
+**Penjelasan:**
+
+- Model klasifikasi dilatih untuk memprediksi apakah harga **5 hari ke depan** akan
+  **lebih tinggi** daripada harga hari ini.
+- Probabilitas di atas hanyalah estimasi statistika dari model, **bukan kepastian**.
+- Aturan sinyal di atas (mis. beli jika probabilitas > 60%) hanyalah contoh strategi
+  yang sangat sederhana dan *tidak* mempertimbangkan risiko, biaya transaksi, dsb.
+""")
+
+    # Visualisasikan probabilitas sebagai gauge / bar
+    fig_prob = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=proba_up * 100,
+        title={"text": "Probabilitas Naik (5 hari)"},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"color": "royalblue"},
+            "steps": [
+                {"range": [0, 50], "color": "#ffcccc"},
+                {"range": [50, 70], "color": "#fff3cd"},
+                {"range": [70, 100], "color": "#d4edda"},
+            ],
+        }
+    ))
+    st.plotly_chart(fig_prob, use_container_width=True)
+
+
+# ==========================================================
+# 9e. Tab 5 – Catatan & Backtest
+# ==========================================================
+
+with tab5:
+    st.subheader("Catatan Penting & Backtest (Dari Notebook)")
+
+    st.markdown("""
+### Kenapa model sering kalah dari baseline *naive*?
+
+Dari eksperimen di notebook:
+
+- Baseline *naive* (harga besok = harga hari ini) memiliki RMSE sekitar **146**.
+- Model LSTM, GRU, dan Hybrid memiliki RMSE jauh lebih tinggi.
+- Hal ini konsisten dengan teori bahwa **harga saham harian cenderung random walk**,
+  sehingga sulit diprediksi jauh lebih baik daripada strategi naive.
+
+Di aplikasi ini, fokusnya adalah pada **eksplorasi interaktif**:
+
+- Melihat bagaimana model bereaksi terhadap 60 hari terakhir.
+- Membandingkan prediksi model vs baseline.
+- Melihat probabilitas arah pergerakan 5 hari.
+
+### Backtest Lengkap
+
+Backtest numerik (RMSE, MAE, ekspanding-window CV, dsb.)
+telah dilakukan di notebook pengembangan model.
+
+Jika ingin, kamu bisa:
+1. Mengekspor hasil prediksi backtest ke CSV dari notebook.
+2. Memuat CSV tersebut di sini dan menambahkan grafik perbandingan aktual vs prediksi.
 """)
 
     st.info(
-        "Untuk menampilkan grafik backtest yang sama seperti di notebook, "
-        "kamu bisa mengekspor data prediksi ke CSV dari notebook, lalu memuatnya di sini "
-        "sebagai tambahan. Saat ini tab ini hanya berfungsi sebagai placeholder penjelasan."
+        "Ingat: semua output di aplikasi ini bersifat edukatif, "
+        "bukan rekomendasi beli/jual saham."
     )
 
 
@@ -310,6 +506,7 @@ Di aplikasi ini fokusnya adalah eksplorasi visual & prediksi harian.
 
 st.markdown("---")
 st.caption(
-    "Dikembangkan sebagai mini project prediksi harga saham harian menggunakan LSTM & GRU. "
+    "Dikembangkan sebagai mini project prediksi harga saham harian menggunakan LSTM, GRU, "
+    "model hybrid multi-step, dan klasifikasi arah. "
     "Prediksi hanya untuk keperluan edukasi dan eksplorasi, bukan rekomendasi investasi."
 )
