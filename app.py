@@ -109,9 +109,13 @@ def load_price_data(ticker: str, start_date: dt.date):
     data = yf.download(ticker, start=start_date, end=dt.date.today())
     if data.empty:
         return None
-    data = data.reset_index()
-    data.rename(columns={"Date": "Date"}, inplace=True)
+
+    data = data.reset_index()  # index → kolom pertama
+    first_col = data.columns[0]  # bisa "Date", "Datetime", atau "index"
+    data = data.rename(columns={first_col: "Date"})  # paksa jadi "Date"
+
     return data
+
 
 
 # ==========================================================
@@ -277,18 +281,28 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader(f"Data Historis {ticker}")
 
-    fig_price = px.line(
-        price_data,
-        x="Date",
-        y="Close",
-        title=f"Harga Penutupan (Close) - {ticker}",
-        labels={"Date": "Tanggal", "Close": "Harga"}
-    )
-    st.plotly_chart(fig_price, use_container_width=True)
+    # Debug: tampilkan nama kolom yang tersedia
+    st.caption(f"Kolom yang terdeteksi di data: {list(price_data.columns)}")
 
-    st.markdown("### Contoh 5 baris terakhir")
+    # Coba buat grafik harga
+    try:
+        fig_price = px.line(
+            price_data,
+            x="Date",
+            y="Close",
+            title=f"Harga Penutupan (Close) - {ticker}",
+            labels={"Date": "Tanggal", "Close": "Harga"}
+        )
+        st.plotly_chart(fig_price, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Gagal membuat grafik harga. Error: {e}")
+        st.markdown("### Berikut cuplikan data untuk pengecekan:")
+        st.dataframe(price_data.head(), use_container_width=True)
+
+    # Tampilkan data tail di bagian bawah
+    st.markdown("### 5 Baris Terakhir Data")
     st.dataframe(price_data.tail(), use_container_width=True)
-
 
 # ==========================================================
 # 9b. Tab 2 – Prediksi 1 Hari ke Depan (Regresi)
