@@ -151,7 +151,7 @@ def prepare_last_window(df_features: pd.DataFrame, scaler):
 # ==========================================================
 
 # Logo kampus + identitas (diletakkan di paling atas sidebar)
-st.sidebar.image("logo_ubhara.png", width=150)
+st.sidebar.image("logo_ubhara.png", width=130)
 st.sidebar.markdown("""
 ### Mini Project Prediksi Saham
 **Bagus Darmawan**  
