@@ -59,8 +59,6 @@ def load_models_and_scalers():
     )
 
 
-
-
 # ==========================================================
 # 3. Fungsi: Ambil Data Harga & Buat Fitur Teknikal
 # ==========================================================
@@ -106,16 +104,38 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data
 def load_price_data(ticker: str, start_date: dt.date):
+    """
+    Ambil data dari yfinance dan rapikan kolom:
+    - Flatten MultiIndex (kalau ada)
+    - Pastikan ada kolom Date, Open, High, Low, Close, Volume
+    """
     data = yf.download(ticker, start=start_date, end=dt.date.today())
     if data.empty:
         return None
 
-    data = data.reset_index()  # index → kolom pertama
-    first_col = data.columns[0]  # bisa "Date", "Datetime", atau "index"
-    data = data.rename(columns={first_col: "Date"})  # paksa jadi "Date"
+    data = data.reset_index()
+
+    # Kalau kolomnya MultiIndex (misal ('Close','BBCA.JK')), kita flatten dulu
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [
+            "_".join([str(c) for c in col if c not in ("", None)])
+            for col in data.columns
+        ]
+
+    # Coba rename kolom bertipe Open_<TICKER> jadi Open, dst.
+    rename_map = {}
+    for base in ["Open", "High", "Low", "Close", "Volume"]:
+        col_with_ticker = f"{base}_{ticker}"
+        if col_with_ticker in data.columns:
+            rename_map[col_with_ticker] = base
+    data = data.rename(columns=rename_map)
+
+    # Pastikan kolom pertama bernama "Date"
+    first_col = data.columns[0]
+    if first_col != "Date":
+        data = data.rename(columns={first_col: "Date"})
 
     return data
-
 
 
 # ==========================================================
@@ -174,9 +194,38 @@ def prepare_last_window_cls(df_features: pd.DataFrame, cls_feature_scaler):
 st.sidebar.title("⚙️ Pengaturan")
 
 default_ticker = "BBCA.JK"
-ticker = st.sidebar.text_input("Ticker saham (format Yahoo Finance)", default_ticker)
 
-years_back = st.sidebar.slider("Ambil data historis (tahun ke belakang)", 1, 10, 5)
+# Contoh list beberapa saham populer IDX untuk autocomplete di selectbox
+popular_tickers = [
+    "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "BBTN.JK",
+    "ASII.JK", "TLKM.JK", "ICBP.JK", "UNVR.JK", "ANTM.JK",
+    "MDKA.JK", "BRIS.JK", "SMGR.JK", "KLBF.JK", "BTPS.JK",
+    "INDF.JK", "CPIN.JK", "EXCL.JK", "PGAS.JK", "SIDO.JK",
+    "Custom (ketik manual)"
+]
+
+ticker_choice = st.sidebar.selectbox(
+    "Pilih ticker saham (format Yahoo Finance)",
+    options=popular_tickers,
+    index=0,
+    help="Ketik untuk mencari ticker. Pilih 'Custom (ketik manual)' jika tidak ada di daftar."
+)
+
+if ticker_choice == "Custom (ketik manual)":
+    ticker = st.sidebar.text_input(
+        "Ticker saham (format Yahoo Finance)",
+        value=default_ticker,
+        placeholder="Contoh: BBCA.JK"
+    )
+else:
+    ticker = ticker_choice
+
+# Dropdown tahun (bukan slider lagi)
+years_back = st.sidebar.selectbox(
+    "Ambil data historis (tahun ke belakang)",
+    options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    index=4
+)
 
 start_date = dt.date.today() - dt.timedelta(days=365 * years_back)
 
@@ -281,13 +330,17 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader(f"Data Historis {ticker}")
 
+    # Tambahkan kolom No supaya tabel lebih rapi
+    df_show = price_data.copy()
+    df_show.insert(0, "No", range(1, len(df_show) + 1))
+
     # Debug: tampilkan nama kolom yang tersedia
-    st.caption(f"Kolom yang terdeteksi di data: {list(price_data.columns)}")
+    st.caption(f"Kolom yang terdeteksi di data: {list(df_show.columns)}")
 
     # Coba buat grafik harga
     try:
         fig_price = px.line(
-            price_data,
+            df_show,
             x="Date",
             y="Close",
             title=f"Harga Penutupan (Close) - {ticker}",
@@ -298,11 +351,14 @@ with tab1:
     except Exception as e:
         st.error(f"Gagal membuat grafik harga. Error: {e}")
         st.markdown("### Berikut cuplikan data untuk pengecekan:")
-        st.dataframe(price_data.head(), use_container_width=True)
+        st.dataframe(df_show.head(), use_container_width=True)
 
-    # Tampilkan data tail di bagian bawah
+    st.markdown("### Seluruh Data Historis")
+    st.dataframe(df_show, use_container_width=True)
+
     st.markdown("### 5 Baris Terakhir Data")
-    st.dataframe(price_data.tail(), use_container_width=True)
+    st.dataframe(df_show.tail(), use_container_width=True)
+
 
 # ==========================================================
 # 9b. Tab 2 – Prediksi 1 Hari ke Depan (Regresi)
@@ -343,11 +399,20 @@ with tab2:
         df_pred,
         x="Model",
         y="Predicted_Close",
+        color="Model",
+        color_discrete_map={
+            "Naive (harga hari ini)": "#ff7f0e",
+            "LSTM": "#1f77b4",
+            "GRU": "#2ca02c",
+        },
         text="Predicted_Close",
         labels={"Predicted_Close": "Perkiraan Harga Penutupan"},
         title="Perbandingan Prediksi 1 Hari ke Depan"
     )
     fig_bar.update_traces(texttemplate='%{text:.2f}', textposition="outside")
+    ymin = df_pred["Predicted_Close"].min() * 0.98
+    ymax = df_pred["Predicted_Close"].max() * 1.02
+    fig_bar.update_layout(yaxis_range=[ymin, ymax])
     st.plotly_chart(fig_bar, use_container_width=True)
 
     st.markdown("""
@@ -366,7 +431,12 @@ with tab2:
 with tab3:
     st.subheader("Prediksi 5 Hari ke Depan (Hybrid LSTM+GRU)")
 
-    horizon = st.slider("Pilih horizon prediksi (hari ke-)", 1, 5, 5)
+    # Dropdown horizon (1–5) bukan slider lagi
+    horizon = st.selectbox(
+        "Pilih horizon prediksi (hari ke-)",
+        options=[1, 2, 3, 4, 5],
+        index=4
+    )
 
     # Prediksi 5 hari dalam skala ter-normalisasi
     y_pred_5_scaled = hybrid_model.predict(X_last_reg)  # shape (1, 5)
@@ -449,9 +519,11 @@ with tab4:
         color = "orange"
 
     col1, col2 = st.columns(2)
-    col1.metric("Probabilitas harga 5 hari lagi LEBIH TINGGI daripada hari ini",
-                f"{proba_up * 100:.2f}%")
-    col2.markdown(f"### Sinyal sederhana: :{color}[{signal}]")
+    col1.metric(
+        "Probabilitas harga 5 hari lagi LEBIH TINGGI daripada hari ini",
+        f"{proba_up * 100:.2f}%"
+    )
+    col2.markdown(f"### Sinyal sederhana (threshold {threshold}%): :{color}[{signal}]")
 
     st.markdown("""
 **Penjelasan:**
@@ -459,8 +531,8 @@ with tab4:
 - Model klasifikasi dilatih untuk memprediksi apakah harga **5 hari ke depan** akan
   **lebih tinggi** daripada harga hari ini.
 - Probabilitas di atas hanyalah estimasi statistika dari model, **bukan kepastian**.
-- Aturan sinyal di atas (mis. beli jika probabilitas > 60%) hanyalah contoh strategi
-  yang sangat sederhana dan *tidak* mempertimbangkan risiko, biaya transaksi, dsb.
+- Slider threshold hanya mengubah **aturan sinyal** (kapan disebut BUY / SELL / NEUTRAL),
+  bukan mengubah nilai probabilitas itu sendiri.
 """)
 
     # Visualisasikan probabilitas sebagai gauge / bar
@@ -503,6 +575,13 @@ Di aplikasi ini, fokusnya adalah pada **eksplorasi interaktif**:
 - Melihat bagaimana model bereaksi terhadap 60 hari terakhir.
 - Membandingkan prediksi model vs baseline.
 - Melihat probabilitas arah pergerakan 5 hari.
+
+### Notebook Pengembangan Model
+
+📘 Notebook lengkap pengembangan model (data preparation, training, evaluasi, backtest)
+bisa dilihat di Google Colab:
+
+👉 [Klik di sini untuk membuka notebook](https://colab.research.google.com/drive/1S9ttFNq6L2kbGOu4l5viN-UG2eXnQLqJ?usp=sharing)
 
 ### Backtest Lengkap
 
