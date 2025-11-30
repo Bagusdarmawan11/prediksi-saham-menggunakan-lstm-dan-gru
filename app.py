@@ -27,22 +27,10 @@ st.set_page_config(
 
 @st.cache_resource
 def load_models_and_scalers():
-    lstm_model = tf.keras.models.load_model(
-        "lstm_stock_model.h5",
-        compile=False
-    )
-    gru_model = tf.keras.models.load_model(
-        "gru_stock_model.h5",
-        compile=False
-    )
-    hybrid_model = tf.keras.models.load_model(
-        "hybrid_5day_model.h5",
-        compile=False
-    )
-    direction_model = tf.keras.models.load_model(
-        "direction_5day_model.h5",
-        compile=False
-    )
+    lstm_model = tf.keras.models.load_model("lstm_stock_model.h5", compile=False)
+    gru_model = tf.keras.models.load_model("gru_stock_model.h5", compile=False)
+    hybrid_model = tf.keras.models.load_model("hybrid_5day_model.h5", compile=False)
+    direction_model = tf.keras.models.load_model("direction_5day_model.h5", compile=False)
 
     feature_scaler = joblib.load("feature_scaler_stock.save")
     target_scaler = joblib.load("target_scaler_stock.save")
@@ -64,40 +52,34 @@ def load_models_and_scalers():
 # ==========================================================
 
 def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Menghasilkan dataframe fitur yang sama seperti di notebook:
-    Open, High, Low, Close, Volume + indikator teknikal.
-    """
     df = df.copy()
 
     # Moving Averages
-    df["SMA_10"] = df["Close"].rolling(window=10).mean()
-    df["SMA_30"] = df["Close"].rolling(window=30).mean()
-    df["EMA_10"] = df["Close"].ewm(span=10, adjust=False).mean()
+    df["SMA_10"] = df["Close"].rolling(10).mean()
+    df["SMA_30"] = df["Close"].rolling(30).mean()
+    df["EMA_10"] = df["Close"].ewm(span=10).mean()
 
     # RSI 14
-    window_rsi = 14
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=window_rsi).mean()
-    avg_loss = loss.rolling(window=window_rsi).mean()
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
-    df["RSI_14"] = 100 - (100 / (1 + rs))
+    df["RSI_14"] = 100 - 100 / (1 + rs)
 
-    # MACD (12, 26, 9)
-    ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
-    ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
+    # MACD
+    ema_12 = df["Close"].ewm(span=12).mean()
+    ema_26 = df["Close"].ewm(span=26).mean()
     df["MACD"] = ema_12 - ema_26
-    df["MACD_signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_signal"] = df["MACD"].ewm(span=9).mean()
 
-    # Bollinger Bands (20, 2 std)
-    window_bb = 20
-    bb_middle = df["Close"].rolling(window=window_bb).mean()
-    bb_std = df["Close"].rolling(window=window_bb).std()
-    df["BB_middle"] = bb_middle
-    df["BB_upper"] = bb_middle + 2 * bb_std
-    df["BB_lower"] = bb_middle - 2 * bb_std
+    # Bollinger Bands
+    bb_mid = df["Close"].rolling(20).mean()
+    bb_std = df["Close"].rolling(20).std()
+    df["BB_middle"] = bb_mid
+    df["BB_upper"] = bb_mid + 2 * bb_std
+    df["BB_lower"] = bb_mid - 2 * bb_std
 
     return df
 
@@ -106,8 +88,8 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 def load_price_data(ticker: str, start_date: dt.date):
     """
     Ambil data dari yfinance dan rapikan kolom:
-    - Flatten MultiIndex (kalau ada)
-    - Pastikan ada kolom Date, Open, High, Low, Close, Volume
+    - Flatten MultiIndex kalau ada
+    - Pastikan ada Date, Open, High, Low, Close, Volume
     """
     data = yf.download(ticker, start=start_date, end=dt.date.today())
     if data.empty:
@@ -115,31 +97,28 @@ def load_price_data(ticker: str, start_date: dt.date):
 
     data = data.reset_index()
 
-    # Kalau kolomnya MultiIndex (misal ('Close','BBCA.JK')), kita flatten dulu
+    # Flatten MultiIndex → single level
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = [
             "_".join([str(c) for c in col if c not in ("", None)])
             for col in data.columns
         ]
 
-    # Coba rename kolom bertipe Open_<TICKER> jadi Open, dst.
-    rename_map = {}
+    # Rename Open_<TICKER> → Open, dst.
     for base in ["Open", "High", "Low", "Close", "Volume"]:
-        col_with_ticker = f"{base}_{ticker}"
-        if col_with_ticker in data.columns:
-            rename_map[col_with_ticker] = base
-    data = data.rename(columns=rename_map)
+        col_name = f"{base}_{ticker}"
+        if col_name in data.columns:
+            data = data.rename(columns={col_name: base})
 
-    # Pastikan kolom pertama bernama "Date"
-    first_col = data.columns[0]
-    if first_col != "Date":
-        data = data.rename(columns={first_col: "Date"})
+    # Pastikan kolom pertama bernama Date
+    if data.columns[0] != "Date":
+        data = data.rename(columns={data.columns[0]: "Date"})
 
     return data
 
 
 # ==========================================================
-# 4. Fungsi: Siapkan Window Terakhir untuk Prediksi
+# 4. Window untuk Prediksi
 # ==========================================================
 
 FEATURE_COLS = [
@@ -149,99 +128,63 @@ FEATURE_COLS = [
     "MACD", "MACD_signal",
     "BB_middle", "BB_upper", "BB_lower",
 ]
+LOOK_BACK = 60
 
-LOOK_BACK = 60  # sama seperti di notebook
 
-
-def prepare_last_window_reg(df_features: pd.DataFrame, feature_scaler):
+def prepare_last_window(df_features: pd.DataFrame, scaler):
     """
-    Untuk regresi (LSTM, GRU, Hybrid 5-day):
-    Mengambil 60 baris terakhir fitur, scaling, dan reshape ke (1, 60, n_features).
+    Ambil 60 baris terakhir, scaling, reshape ke (1, 60, n_features)
     """
     if len(df_features) < LOOK_BACK:
         return None
 
-    latest_features = df_features[FEATURE_COLS].values[-LOOK_BACK:]
-    latest_scaled = feature_scaler.transform(latest_features)
+    latest = df_features[FEATURE_COLS].values[-LOOK_BACK:]
+    latest_scaled = scaler.transform(latest)
     X_last = latest_scaled.reshape(1, LOOK_BACK, len(FEATURE_COLS))
 
-    last_close = df_features["Close"].iloc[-1]
-
-    return X_last, float(last_close)
-
-
-def prepare_last_window_cls(df_features: pd.DataFrame, cls_feature_scaler):
-    """
-    Untuk klasifikasi arah 5 hari:
-    Sama seperti regresi, tapi pakai scaler klasifikasi.
-    """
-    if len(df_features) < LOOK_BACK:
-        return None
-
-    latest_features = df_features[FEATURE_COLS].values[-LOOK_BACK:]
-    latest_scaled = cls_feature_scaler.transform(latest_features)
-    X_last = latest_scaled.reshape(1, LOOK_BACK, len(FEATURE_COLS))
-
-    last_close = df_features["Close"].iloc[-1]
-
-    return X_last, float(last_close)
+    last_close = float(df_features["Close"].iloc[-1])
+    return X_last, last_close
 
 
 # ==========================================================
-# 5. Sidebar: Pengaturan Aplikasi
+# 5. Sidebar – Pengaturan
 # ==========================================================
 
 st.sidebar.title("⚙️ Pengaturan")
 
-default_ticker = "BBCA.JK"
-
-# Contoh list beberapa saham populer IDX untuk autocomplete di selectbox
 popular_tickers = [
-    "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "BBTN.JK",
-    "ASII.JK", "TLKM.JK", "ICBP.JK", "UNVR.JK", "ANTM.JK",
-    "MDKA.JK", "BRIS.JK", "SMGR.JK", "KLBF.JK", "BTPS.JK",
-    "INDF.JK", "CPIN.JK", "EXCL.JK", "PGAS.JK", "SIDO.JK",
-    "Custom (ketik manual)"
+    "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "ASII.JK",
+    "TLKM.JK", "ICBP.JK", "UNVR.JK", "ANTM.JK", "MDKA.JK",
+    "Custom (manual)",
 ]
 
 ticker_choice = st.sidebar.selectbox(
-    "Pilih ticker saham (format Yahoo Finance)",
-    options=popular_tickers,
-    index=0,
-    help="Ketik untuk mencari ticker. Pilih 'Custom (ketik manual)' jika tidak ada di daftar."
+    "Pilih Ticker Saham",
+    popular_tickers,
+    help="Ketik untuk mencari. Pilih 'Custom (manual)' untuk memasukkan ticker lain."
 )
 
-if ticker_choice == "Custom (ketik manual)":
+if ticker_choice == "Custom (manual)":
     ticker = st.sidebar.text_input(
-        "Ticker saham (format Yahoo Finance)",
-        value=default_ticker,
+        "Ticker (format Yahoo Finance)",
+        value="BBCA.JK",
         placeholder="Contoh: BBCA.JK"
     )
 else:
     ticker = ticker_choice
 
-# Dropdown tahun (bukan slider lagi)
 years_back = st.sidebar.selectbox(
     "Ambil data historis (tahun ke belakang)",
-    options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    index=4
+    options=[1, 2, 3, 4, 5, 7, 10],
+    index=3,
+    help="Rentang data yang digunakan untuk visualisasi dan fitur model."
 )
 
 start_date = dt.date.today() - dt.timedelta(days=365 * years_back)
 
 st.sidebar.markdown("---")
-st.sidebar.write("Model yang digunakan:")
-st.sidebar.write("- LSTM (regresi 1 hari)")
-st.sidebar.write("- GRU (regresi 1 hari)")
-st.sidebar.write("- Hybrid LSTM+GRU (regresi 5 hari)")
-st.sidebar.write("- LSTM+GRU (klasifikasi arah 5 hari)")
-st.sidebar.write("- Naive baseline (harga kemarin)")
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Catatan: ini adalah demo edukasi.\n"
-    "Prediksi **bukan** rekomendasi investasi."
-)
+st.sidebar.caption("Model digunakan: LSTM, GRU, Hybrid 5-hari, Klasifikasi arah 5-hari.")
+st.sidebar.caption("⚠️ Prediksi hanya untuk edukasi – bukan rekomendasi investasi.")
 
 
 # ==========================================================
@@ -266,52 +209,41 @@ if price_data is None or price_data.empty:
     st.error("Tidak dapat mengambil data harga. Coba ganti ticker atau rentang waktu.")
     st.stop()
 
-
-# ==========================================================
-# 7. Buat Fitur & Window untuk Prediksi
-# ==========================================================
-
 price_data_feat = price_data.set_index("Date")
 price_data_feat = add_technical_features(price_data_feat)
-
-# Drop baris yang masih mengandung NaN dari indikator teknikal
 price_data_feat = price_data_feat.dropna().copy()
 
-reg_last = prepare_last_window_reg(price_data_feat, feature_scaler)
-cls_last = prepare_last_window_cls(price_data_feat, cls_feature_scaler)
+reg_last = prepare_last_window(price_data_feat, feature_scaler)
+cls_last = prepare_last_window(price_data_feat, cls_feature_scaler)
 
 if reg_last is None or cls_last is None:
     st.error(f"Data terlalu pendek (< {LOOK_BACK} hari) untuk membuat window prediksi.")
     st.stop()
 
 X_last_reg, last_close_reg = reg_last
-X_last_cls, last_close_cls = cls_last  # last_close_cls sama dengan last_close_reg, tapi tidak masalah
+X_last_cls, last_close_cls = cls_last  # sama saja nilainya
 
 
 # ==========================================================
-# 8. Layout Utama: Judul & Deskripsi
+# 7. Layout Utama – Judul
 # ==========================================================
 
-st.title("📈 Prediksi Harga Saham Harian dengan LSTM & GRU")
+st.title("📈 Mini Project – Prediksi Harga Saham Harian (LSTM & GRU)")
 
 st.markdown(f"""
-Aplikasi ini menggunakan beberapa model berbasis **LSTM** dan **GRU** yang telah dilatih untuk:
+Aplikasi ini dibuat sebagai mini project untuk:
+- Membandingkan model **LSTM**, **GRU**, dan baseline **Naive (harga kemarin)**.
+- Melihat prediksi **harga 1 hari** dan **5 hari ke depan**.
+- Memprediksi **arah pergerakan 5 hari ke depan (Naik / Tidak Naik)**.
 
-1. Memprediksi **harga penutupan (Close)** 1 hari ke depan.
-2. Memprediksi **harga penutupan 5 hari ke depan** (multi-step).
-3. Memprediksi **arah pergerakan harga dalam 5 hari ke depan** (Naik / Tidak Naik).
-
-- Ticker: **{ticker}**
-- Data historis: {start_date.strftime("%d-%m-%Y")} s/d hari ini
-- Window input: **{LOOK_BACK} hari terakhir**
-- Fitur: harga (Open, High, Low, Close, Volume) + indikator teknikal (SMA, EMA, RSI, MACD, Bollinger Bands)
-
-> ⚠️ Prediksi bersifat edukatif dan **bukan** saran investasi.
+**Ticker:** `{ticker}`  
+**Rentang data historis:** {start_date.strftime("%d-%m-%Y")} s/d hari ini  
+**Window input model:** {LOOK_BACK} hari terakhir  
 """)
 
 
 # ==========================================================
-# 9. Tab Navigasi
+# 8. Tab Navigasi
 # ==========================================================
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -324,34 +256,49 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 
 # ==========================================================
-# 9a. Tab 1 – Data Historis
+# 9a. TAB 1 – Data Historis
 # ==========================================================
 
 with tab1:
-    st.subheader(f"Data Historis {ticker}")
+    st.subheader("📊 Data Historis & Indikator")
 
-    # Tambahkan kolom No supaya tabel lebih rapi
+    st.markdown("""
+Tab ini menampilkan data historis harga saham yang digunakan model, beserta
+gambaran pergerakan harga. Kamu bisa memilih rentang waktu di sidebar.
+""")
+
     df_show = price_data.copy()
     df_show.insert(0, "No", range(1, len(df_show) + 1))
 
-    # Debug: tampilkan nama kolom yang tersedia
-    st.caption(f"Kolom yang terdeteksi di data: {list(df_show.columns)}")
+    st.caption(f"Kolom data: {list(df_show.columns)}")
 
-    # Coba buat grafik harga
+    # Pilih window untuk grafik
+    view_option = st.selectbox(
+        "Tampilkan grafik untuk:",
+        ["Seluruh data", "6 bulan terakhir", "3 bulan terakhir"],
+        index=0
+    )
+
+    df_plot = df_show.copy()
+    if view_option == "6 bulan terakhir":
+        cutoff = df_plot["Date"].max() - pd.Timedelta(days=180)
+        df_plot = df_plot[df_plot["Date"] >= cutoff]
+    elif view_option == "3 bulan terakhir":
+        cutoff = df_plot["Date"].max() - pd.Timedelta(days=90)
+        df_plot = df_plot[df_plot["Date"] >= cutoff]
+
     try:
         fig_price = px.line(
-            df_show,
+            df_plot,
             x="Date",
             y="Close",
             title=f"Harga Penutupan (Close) - {ticker}",
             labels={"Date": "Tanggal", "Close": "Harga"}
         )
         st.plotly_chart(fig_price, use_container_width=True)
-
     except Exception as e:
         st.error(f"Gagal membuat grafik harga. Error: {e}")
-        st.markdown("### Berikut cuplikan data untuk pengecekan:")
-        st.dataframe(df_show.head(), use_container_width=True)
+        st.dataframe(df_plot.head(), use_container_width=True)
 
     st.markdown("### Seluruh Data Historis")
     st.dataframe(df_show, use_container_width=True)
@@ -361,17 +308,26 @@ with tab1:
 
 
 # ==========================================================
-# 9b. Tab 2 – Prediksi 1 Hari ke Depan (Regresi)
+# 9b. TAB 2 – Prediksi 1 Hari (LSTM vs GRU vs Naive)
 # ==========================================================
 
 with tab2:
-    st.subheader("Prediksi Harga 1 Hari ke Depan")
+    st.subheader("🔮 Prediksi Harga 1 Hari ke Depan")
+
+    st.markdown("""
+Tab ini membandingkan prediksi **harga penutupan besok** dari:
+- Baseline **Naive** (harga besok = harga hari ini),
+- Model **LSTM**,
+- Model **GRU**.
+
+Model dilatih pada data historis BBCA.JK dengan fitur harga + indikator teknikal.
+""")
 
     # Prediksi dalam skala ter-normalisasi
     y_pred_lstm_scaled = lstm_model.predict(X_last_reg)
     y_pred_gru_scaled = gru_model.predict(X_last_reg)
 
-    # Inverse transform ke skala harga asli
+    # Inverse ke skala harga asli
     y_pred_lstm = target_scaler.inverse_transform(
         y_pred_lstm_scaled.reshape(-1, 1)
     )[0, 0]
@@ -379,19 +335,30 @@ with tab2:
         y_pred_gru_scaled.reshape(-1, 1)
     )[0, 0]
 
-    # Baseline naive
     naive_pred = last_close_reg
 
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Harga Terakhir (Close)", f"{last_close_reg:,.2f}")
-    col_b.metric("Prediksi LSTM (besok)", f"{y_pred_lstm:,.2f}",
-                 f"{y_pred_lstm - last_close_reg:,.2f}")
-    col_c.metric("Prediksi GRU (besok)", f"{y_pred_gru:,.2f}",
-                 f"{y_pred_gru - last_close_reg:,.2f}")
+    delta_lstm = y_pred_lstm - last_close_reg
+    delta_gru = y_pred_gru - last_close_reg
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Harga Terakhir (Close)", f"{last_close_reg:,.2f}")
+
+    col2.metric(
+        "Prediksi LSTM (besok)",
+        f"{y_pred_lstm:,.2f}",
+        f"{delta_lstm:,.2f}"
+    )
+
+    col3.metric(
+        "Prediksi GRU (besok)",
+        f"{y_pred_gru:,.2f}",
+        f"{delta_gru:,.2f}"
+    )
 
     st.markdown("#### Perbandingan Prediksi")
+
     df_pred = pd.DataFrame({
-        "Model": ["Naive (harga hari ini)", "LSTM", "GRU"],
+        "Model": ["Naive (hari ini)", "LSTM", "GRU"],
         "Predicted_Close": [naive_pred, y_pred_lstm, y_pred_gru]
     })
 
@@ -401,7 +368,7 @@ with tab2:
         y="Predicted_Close",
         color="Model",
         color_discrete_map={
-            "Naive (harga hari ini)": "#ff7f0e",
+            "Naive (hari ini)": "#ff7f0e",
             "LSTM": "#1f77b4",
             "GRU": "#2ca02c",
         },
@@ -416,48 +383,52 @@ with tab2:
     st.plotly_chart(fig_bar, use_container_width=True)
 
     st.markdown("""
-**Interpretasi ringkas:**
+**Insight singkat:**
 
-- Baseline *naive* memprediksi harga besok = harga hari ini.
-- LSTM & GRU mencoba mengoreksi berdasarkan pola 60 hari terakhir dan indikator teknikal.
-- Karena harga saham harian sangat noisy, sering kali baseline naive masih sangat sulit dikalahkan.
+- Kalau bar LSTM/GRU hampir sama dengan Naive, artinya model sulit mengalahkan strategi
+  "harga besok = harga hari ini".
+- Hal ini umum pada data harga saham harian yang sangat noisy (mendekati random walk).
 """)
 
 
 # ==========================================================
-# 9c. Tab 3 – Prediksi 5 Hari ke Depan (Hybrid)
+# 9c. TAB 3 – Prediksi 5 Hari ke Depan (Hybrid)
 # ==========================================================
 
 with tab3:
-    st.subheader("Prediksi 5 Hari ke Depan (Hybrid LSTM+GRU)")
+    st.subheader("📅 Prediksi 5 Hari ke Depan (Hybrid LSTM+GRU)")
 
-    # Dropdown horizon (1–5) bukan slider lagi
+    st.markdown("""
+Model **Hybrid** ini memprediksi **5 titik harga ke depan sekaligus** (t+1 s.d. t+5).
+Dropdown di bawah menentukan **hari ke berapa** yang ingin kamu fokuskan.
+""")
+
     horizon = st.selectbox(
         "Pilih horizon prediksi (hari ke-)",
         options=[1, 2, 3, 4, 5],
-        index=4
+        index=4,
+        help="Hari ke-1 = besok, Hari ke-5 = 5 hari kerja berikutnya."
     )
 
-    # Prediksi 5 hari dalam skala ter-normalisasi
-    y_pred_5_scaled = hybrid_model.predict(X_last_reg)  # shape (1, 5)
+    y_pred_5_scaled = hybrid_model.predict(X_last_reg)
     y_pred_5_flat = target_scaler.inverse_transform(
         y_pred_5_scaled.reshape(-1, 1)
-    ).flatten()  # shape (5,)
+    ).flatten()
 
     days = np.arange(1, 6)
-    naive_path = np.full_like(days, fill_value=last_close_reg, dtype=float)
+    naive_path = np.full_like(days, last_close_reg, dtype=float)
 
-    # Tampilkan angka untuk horizon terpilih
     selected_price = y_pred_5_flat[horizon - 1]
+    delta_sel = selected_price - last_close_reg
 
     col1, col2 = st.columns(2)
-    col1.metric(f"Prediksi Hybrid untuk hari ke-{horizon}",
-                f"{selected_price:,.2f}",
-                f"{selected_price - last_close_reg:,.2f}")
-    col2.metric("Harga terakhir (acuan Naive)",
-                f"{last_close_reg:,.2f}")
+    col1.metric(
+        f"Prediksi Hybrid untuk hari ke-{horizon}",
+        f"{selected_price:,.2f}",
+        f"{delta_sel:,.2f}"
+    )
+    col2.metric("Harga terakhir (acuan Naive)", f"{last_close_reg:,.2f}")
 
-    # Plot jalur 5 hari ke depan
     fig_forecast = go.Figure()
     fig_forecast.add_trace(go.Scatter(
         x=days,
@@ -480,34 +451,41 @@ with tab3:
     st.plotly_chart(fig_forecast, use_container_width=True)
 
     st.markdown("""
-**Catatan:**
+**Insight singkat:**
 
-- Model hybrid memprediksi **5 titik harga ke depan sekaligus** (t+1 ... t+5).
-- Garis putus-putus menunjukkan baseline *naive* (harga selalu sama dengan hari ini).
-- Performa nyata hybrid vs naive sudah dianalisis di notebook, dan untuk data harian biasanya naive masih sangat kuat.
+- Garis putus-putus adalah baseline *naive* (harga konstan = hari ini).
+- Kalau garis Hybrid tidak jauh dari garis Naive, berarti model belum mampu
+  menangkap pola lanjutan yang kuat di luar pergerakan random jangka pendek.
 """)
 
 
 # ==========================================================
-# 9d. Tab 4 – Prediksi Arah 5 Hari ke Depan (Klasifikasi)
+# 9d. TAB 4 – Klasifikasi Arah 5 Hari + Simulasi
 # ==========================================================
 
 with tab4:
-    st.subheader("Prediksi Arah 5 Hari ke Depan (Naik / Tidak Naik)")
+    st.subheader("📈 Prediksi Arah 5 Hari ke Depan (Naik / Tidak Naik)")
 
-    # Probabilitas naik (label 1)
-    proba_up = direction_model.predict(X_last_cls).flatten()[0]  # antara 0..1
+    st.markdown("""
+Model klasifikasi ini memprediksi probabilitas bahwa **harga 5 hari ke depan** akan
+**lebih tinggi** dibanding harga hari ini.
+
+Slider threshold di bawah hanya mengubah **aturan sinyal** (kapan BUY/SELL/NEUTRAL),
+bukan mengubah nilai probabilitas model.
+""")
+
+    proba_up = direction_model.predict(X_last_cls).flatten()[0]
 
     threshold = st.slider(
-        "Ambang probabilitas untuk sinyal beli (%)",
+        "Ambang probabilitas untuk sinyal BUY (%)",
         min_value=50,
         max_value=90,
         value=60,
-        step=1
+        step=1,
+        help="Misal 60% artinya model harus cukup yakin (>=0.60) baru memberi sinyal BUY."
     )
     th = threshold / 100.0
 
-    # Keputusan sederhana
     if proba_up >= th:
         signal = "BUY (sinyal beli)"
         color = "green"
@@ -520,22 +498,15 @@ with tab4:
 
     col1, col2 = st.columns(2)
     col1.metric(
-        "Probabilitas harga 5 hari lagi LEBIH TINGGI daripada hari ini",
+        "Probabilitas harga 5 hari lagi LEBIH TINGGI",
         f"{proba_up * 100:.2f}%"
     )
-    col2.markdown(f"### Sinyal sederhana (threshold {threshold}%): :{color}[{signal}]")
+    col2.markdown(
+        f"### Sinyal sederhana (threshold {threshold}%): "
+        f":{color}[{signal}]"
+    )
 
-    st.markdown("""
-**Penjelasan:**
-
-- Model klasifikasi dilatih untuk memprediksi apakah harga **5 hari ke depan** akan
-  **lebih tinggi** daripada harga hari ini.
-- Probabilitas di atas hanyalah estimasi statistika dari model, **bukan kepastian**.
-- Slider threshold hanya mengubah **aturan sinyal** (kapan disebut BUY / SELL / NEUTRAL),
-  bukan mengubah nilai probabilitas itu sendiri.
-""")
-
-    # Visualisasikan probabilitas sebagai gauge / bar
+    # Gauge probabilitas
     fig_prob = go.Figure(go.Indicator(
         mode="gauge+number",
         value=proba_up * 100,
@@ -552,45 +523,74 @@ with tab4:
     ))
     st.plotly_chart(fig_prob, use_container_width=True)
 
+    st.markdown("### Simulasi Strategi Sederhana (Teoritis)")
+
+    st.markdown("""
+Simulasi ini **bukan backtest sungguhan**, hanya ilustrasi:
+
+- Jika sinyal = BUY, anggap beli 1 unit di harga sekarang,
+- lalu **gunakan prediksi Hybrid hari ke-5** sebagai perkiraan harga jual.
+""")
+
+    # Gunakan prediksi hybrid hari ke-5 untuk simulasi
+    y_pred_5_scaled_sim = hybrid_model.predict(X_last_reg)
+    y_pred_5_flat_sim = target_scaler.inverse_transform(
+        y_pred_5_scaled_sim.reshape(-1, 1)
+    ).flatten()
+    price_5d = y_pred_5_flat_sim[4]  # hari ke-5
+    gain = price_5d - last_close_reg
+    gain_pct = gain / last_close_reg * 100
+
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("Harga sekarang (entry)", f"{last_close_reg:,.2f}")
+    col_s2.metric("Perkiraan harga 5 hari lagi (Hybrid)", f"{price_5d:,.2f}")
+    col_s3.metric("Perkiraan P/L 5 hari", f"{gain:,.2f}", f"{gain_pct:,.2f}%")
+
+    st.info("""
+Ini hanya simulasi teoritis dengan **prediksi model**, bukan hasil backtest historis.
+Untuk trading nyata, perlu backtest ketat, manajemen risiko, dan biaya transaksi.
+""")
+
 
 # ==========================================================
-# 9e. Tab 5 – Catatan & Backtest
+# 9e. TAB 5 – Catatan & Backtest
 # ==========================================================
 
 with tab5:
-    st.subheader("Catatan Penting & Backtest (Dari Notebook)")
+    st.subheader("ℹ️ Catatan Penting & Backtest (Dari Notebook)")
 
     st.markdown("""
-### Kenapa model sering kalah dari baseline *naive*?
+### Kenapa model sulit mengalahkan baseline *naive*?
 
 Dari eksperimen di notebook:
 
-- Baseline *naive* (harga besok = harga hari ini) memiliki RMSE sekitar **146**.
-- Model LSTM, GRU, dan Hybrid memiliki RMSE jauh lebih tinggi.
-- Hal ini konsisten dengan teori bahwa **harga saham harian cenderung random walk**,
+- Baseline *naive* (harga besok = harga hari ini) punya RMSE sekitar **146**.
+- Model LSTM, GRU, dan Hybrid punya RMSE jauh lebih besar.
+- Ini konsisten dengan teori bahwa **harga saham harian cenderung random walk**,
   sehingga sulit diprediksi jauh lebih baik daripada strategi naive.
 
-Di aplikasi ini, fokusnya adalah pada **eksplorasi interaktif**:
-
-- Melihat bagaimana model bereaksi terhadap 60 hari terakhir.
-- Membandingkan prediksi model vs baseline.
+Aplikasi ini lebih berfungsi sebagai **alat eksplorasi & edukasi**:
+- Melihat reaksi model terhadap 60 hari terakhir,
+- Membandingkan prediksi model vs baseline,
 - Melihat probabilitas arah pergerakan 5 hari.
 
 ### Notebook Pengembangan Model
 
-📘 Notebook lengkap pengembangan model (data preparation, training, evaluasi, backtest)
-bisa dilihat di Google Colab:
+📘 Notebook lengkap (preprocessing, training, evaluasi, cross-validation):
 
-👉 [Klik di sini untuk membuka notebook](https://colab.research.google.com/drive/1S9ttFNq6L2kbGOu4l5viN-UG2eXnQLqJ?usp=sharing)
+👉 [Buka di Google Colab](https://colab.research.google.com/drive/1S9ttFNq6L2kbGOu4l5viN-UG2eXnQLqJ?usp=sharing)
 
-### Backtest Lengkap
+Di sana kamu bisa melihat:
+- Detail arsitektur LSTM, GRU, dan Hybrid,
+- Eksperimen window size & hyperparameter,
+- Expanding-window cross-validation,
+- Analisis mengapa baseline naive sangat kuat.
 
-Backtest numerik (RMSE, MAE, ekspanding-window CV, dsb.)
-telah dilakukan di notebook pengembangan model.
+### Ide Pengembangan Lanjutan
 
-Jika ingin, kamu bisa:
-1. Mengekspor hasil prediksi backtest ke CSV dari notebook.
-2. Memuat CSV tersebut di sini dan menambahkan grafik perbandingan aktual vs prediksi.
+- Tambah pilihan model (misal: Linear Regression / Random Forest) sebagai pembanding non-deep-learning.
+- Tambah upload CSV untuk user yang ingin pakai data sendiri.
+- Tambah backtest strategi yang lebih realistis (dengan biaya transaksi, stop loss, dll).
 """)
 
     st.info(
@@ -605,7 +605,7 @@ Jika ingin, kamu bisa:
 
 st.markdown("---")
 st.caption(
-    "Dikembangkan sebagai mini project prediksi harga saham harian menggunakan LSTM, GRU, "
+    "Mini Project Prediksi Harga Saham Harian menggunakan LSTM, GRU, "
     "model hybrid multi-step, dan klasifikasi arah. "
-    "Prediksi hanya untuk keperluan edukasi dan eksplorasi, bukan rekomendasi investasi."
+    "Prediksi hanya untuk edukasi & eksplorasi, bukan saran investasi."
 )
