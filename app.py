@@ -151,6 +151,14 @@ def prepare_last_window(df_features: pd.DataFrame, scaler):
 # ==========================================================
 
 st.sidebar.title("⚙️ Pengaturan")
+# Logo kampus
+st.sidebar.image("logo_ubhara.png", use_container_width=True)
+st.sidebar.markdown("""
+### Mini Project Prediksi Saham
+**Bagus Darmawan**  
+Universitas Bhayangkara Jakarta Raya  
+""")
+
 
 popular_tickers = [
     "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "ASII.JK",
