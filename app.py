@@ -608,12 +608,13 @@ Di sana kamu bisa melihat:
 
 
 # ==========================================================
-# 10. Footer
+# 10. Footer – Branding
 # ==========================================================
 
 st.markdown("---")
 st.caption(
-    "Mini Project Prediksi Harga Saham Harian menggunakan LSTM, GRU, "
-    "model hybrid multi-step, dan klasifikasi arah. "
-    "Prediksi hanya untuk edukasi & eksplorasi, bukan saran investasi."
+    "Dibuat oleh: **Bagus Darmawan** · Universitas Bhayangkara Jakarta Raya · "
+    "Mini Project: *Prediksi Harga Saham Harian Menggunakan LSTM & GRU* · "
+    "Aplikasi ini hanya untuk edukasi dan eksplorasi, bukan rekomendasi investasi."
 )
+
