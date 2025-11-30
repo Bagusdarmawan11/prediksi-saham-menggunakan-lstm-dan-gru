@@ -150,14 +150,17 @@ def prepare_last_window(df_features: pd.DataFrame, scaler):
 # 5. Sidebar – Pengaturan
 # ==========================================================
 
-st.sidebar.title("⚙️ Pengaturan")
-# Logo kampus
+# Logo kampus + identitas (diletakkan di paling atas sidebar)
 st.sidebar.image("logo_ubhara.png", use_container_width=True)
 st.sidebar.markdown("""
 ### Mini Project Prediksi Saham
 **Bagus Darmawan**  
 Universitas Bhayangkara Jakarta Raya  
 """)
+
+st.sidebar.markdown("---")
+st.sidebar.title("⚙️ Pengaturan")
+
 
 
 popular_tickers = [
