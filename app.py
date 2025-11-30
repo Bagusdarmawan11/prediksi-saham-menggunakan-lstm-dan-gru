@@ -28,14 +28,26 @@ st.set_page_config(
 @st.cache_resource
 def load_models_and_scalers():
     # Model regresi 1-hari
-    lstm_model = tf.keras.models.load_model("lstm_stock_model.h5")
-    gru_model = tf.keras.models.load_model("gru_stock_model.h5")
+    lstm_model = tf.keras.models.load_model(
+        "lstm_stock_model.h5",
+        compile=False  # ← penting
+    )
+    gru_model = tf.keras.models.load_model(
+        "gru_stock_model.h5",
+        compile=False
+    )
 
     # Model multi-step 5 hari
-    hybrid_model = tf.keras.models.load_model("hybrid_5day_model.h5")
+    hybrid_model = tf.keras.models.load_model(
+        "hybrid_5day_model.h5",
+        compile=False
+    )
 
     # Model klasifikasi arah 5 hari
-    direction_model = tf.keras.models.load_model("direction_5day_model.h5")
+    direction_model = tf.keras.models.load_model(
+        "direction_5day_model.h5",
+        compile=False
+    )
 
     # Scaler regresi (fitur & target)
     feature_scaler = joblib.load("feature_scaler_stock.save")
@@ -53,6 +65,7 @@ def load_models_and_scalers():
         target_scaler,
         cls_feature_scaler,
     )
+
 
 
 # ==========================================================
